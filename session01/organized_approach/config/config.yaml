@@ -1,0 +1,30 @@
+data:
+  raw_data_path: "data/raw/factory_data.csv"
+  images_path: "data/raw/images/"
+  processed_data_path: "data/processed/"
+
+preprocessing:
+  min_defect_score: 0.1  # Threshold for filtering low-confidence samples
+  image_size: [224, 224]  # Standardized image dimensions
+  
+features:
+  histogram_bins: 32  # Number of bins for color histogram
+  include_texture: true
+  include_edge_features: true
+
+model:
+  name: "RandomForestClassifier"
+  hyperparameters:
+    n_estimators: 100
+    max_depth: 15
+    random_state: 42
+    
+training:
+  test_size: 0.2
+  validation_size: 0.2
+  random_state: 42
+
+paths:
+  model_output: "models/"
+  logs: "logs/"
+  experiment_tracking: "experiments/mlruns/"
