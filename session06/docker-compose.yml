@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  visionaryai-classifier:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - LOG_LEVEL=info
+    volumes:
+      # Mount models directory for development
+      - ./models:/app/models
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
