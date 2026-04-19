@@ -1,0 +1,115 @@
+name: ML CI Pipeline - VisionaryAI Defect Detection
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PYTHON_VERSION: '3.9'
+  MODEL_ACCURACY_THRESHOLD: 0.95
+
+jobs:
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+    
+    - name: Code formatting check
+      run: black --check src/
+      
+    - name: Type checking
+      run: mypy src/
+      
+    - name: Security scan
+      run: bandit -r src/
+      
+    - name: Lint code
+      run: flake8 src/ --max-line-length=88
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    needs: code-quality
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+    
+    - name: Run unit tests
+      run: |
+        pytest tests/unit/ -v --cov=src --cov-report=xml
+        
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+
+  data-validation:
+    runs-on: ubuntu-latest
+    needs: code-quality
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+    
+    - name: Download sample data
+      run: |
+        # Download or generate sample data for testing
+        python scripts/download_sample_data.py
+    
+    - name: Validate data schema
+      run: |
+        python tests/validate_data_schema.py
+        
+    - name: Check data quality
+      run: |
+        python tests/data_quality_checks.py
+
+  model-validation:
+    runs-on: ubuntu-latest
+    needs: [unit-tests, data-validation]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+    
+    - name: Train test model
+      run: |
+        python scripts/train_model.py --config configs/test_config.yaml
+        
+    - name: Validate model performance
+      run: |
+        python tests/model_validation.py \
+          --model-path models/test_model.pkl \
+          --threshold ${{ env.MODEL_ACCURACY_THRESHOLD }}

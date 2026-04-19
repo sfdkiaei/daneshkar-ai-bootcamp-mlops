@@ -1,0 +1,236 @@
+name: Complete MLOps Pipeline - VisionaryAI Multi-Service
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: visionaryai/ml-services
+
+jobs:
+  # Stage 1: Code Quality and Testing
+  quality-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+    
+    - name: Code quality checks
+      run: |
+        black --check .
+        flake8 src/
+        mypy src/
+        bandit -r src/
+    
+    - name: Run comprehensive tests
+      run: |
+        pytest tests/ -v --cov=src --cov-report=term-missing
+        
+    - name: Generate version
+      id: version
+      run: |
+        VERSION=$(date +%Y%m%d)-$(git rev-parse --short HEAD)
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+  # Stage 2: Multi-Service Testing
+  service-tests:
+    runs-on: ubuntu-latest
+    needs: quality-gate
+    strategy:
+      matrix:
+        service: [defect-detection, helpdesk-nlp, recommendation-engine]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install service dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install -r services/${{ matrix.service }}/requirements.txt
+    
+    - name: Test ${{ matrix.service }}
+      run: |
+        cd services/${{ matrix.service }}
+        pytest tests/ -v
+        
+    - name: Integration test ${{ matrix.service }}
+      run: |
+        python tests/integration/test_${{ matrix.service }}.py
+
+  # Stage 3: Model Performance Validation
+  model-performance:
+    runs-on: ubuntu-latest
+    needs: quality-gate
+    strategy:
+      matrix:
+        model: 
+          - name: defect-detection
+            threshold: 0.95
+            metric: accuracy
+          - name: helpdesk-nlp
+            threshold: 0.90
+            metric: f1_score
+          - name: recommendation-engine
+            threshold: 0.85
+            metric: ndcg_at_10
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+    
+    - name: Download model artifacts
+      run: |
+        python scripts/download_model.py --model ${{ matrix.model.name }}
+    
+    - name: Validate ${{ matrix.model.name }} performance
+      run: |
+        python scripts/validate_model_performance.py \
+          --model ${{ matrix.model.name }} \
+          --metric ${{ matrix.model.metric }} \
+          --threshold ${{ matrix.model.threshold }}
+
+  # Stage 4: Security and Compliance
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: quality-gate
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run dependency scan
+      uses: pypa/gh-action-pip-audit@v1.0.8
+      
+    - name: Run container security scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+
+  # Stage 5: Build and Package
+  build-images:
+    runs-on: ubuntu-latest
+    needs: [service-tests, model-performance, security-scan]
+    if: github.event_name != 'pull_request'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Log in to Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Build and push Docker images
+      run: |
+        VERSION=${{ needs.quality-gate.outputs.version }}
+        
+        # Build multi-service image
+        docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$VERSION .
+        docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest .
+        
+        docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$VERSION
+        docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+  # Stage 6: Deploy to Staging
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [build-images, quality-gate]
+    environment: staging
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Deploy to staging
+      run: |
+        VERSION=${{ needs.quality-gate.outputs.version }}
+        
+        # Update deployment configuration
+        sed -i "s/IMAGE_VERSION_PLACEHOLDER/$VERSION/g" k8s/staging/deployment.yaml
+        
+        # Deploy using kubectl (would need cluster credentials)
+        echo "Would deploy version $VERSION to staging environment"
+        
+    - name: Run smoke tests
+      run: |
+        python tests/smoke/test_staging_deployment.py
+        
+    - name: Performance benchmark
+      run: |
+        python tests/performance/benchmark_staging.py
+
+  # Stage 7: Deploy to Production (Manual Approval Required)
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, quality-gate]
+    environment: production
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Deploy to production
+      run: |
+        VERSION=${{ needs.quality-gate.outputs.version }}
+        
+        # Blue-green deployment script
+        python scripts/blue_green_deploy.py \
+          --version $VERSION \
+          --environment production \
+          --strategy blue-green
+        
+    - name: Validate production deployment
+      run: |
+        python tests/production/validate_deployment.py
+        
+    - name: Send deployment notification
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        text: "VisionaryAI ML Services deployed to production: ${{ needs.quality-gate.outputs.version }}"
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  # Stage 8: Post-Deployment Monitoring
+  post-deployment:
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    
+    steps:
+    - name: Setup monitoring alerts
+      run: |
+        python scripts/setup_monitoring.py --environment production
+        
+    - name: Schedule performance monitoring
+      run: |
+        # Schedule ongoing performance monitoring
+        python scripts/schedule_monitoring.py --duration 24h
